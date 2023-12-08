@@ -1,0 +1,946 @@
+---
+title: "Clustering Petrovax"
+output: html_notebook
+---
+
+```{r load libs and functions}
+library("igraph")
+library("data.table")
+library("stringdist")
+library("Biostrings")
+library("dplyr")
+library("tibble")
+library("ggplot2")
+library(RColorBrewer)
+
+#### choose distance - Levestein or Hamming ####
+method_clustering = "hamming" # lv" #### or "hamming"
+igraph_from_data_cdr3.2<-function(df,max_errs=1) {
+  df = df %>% group_by(cdr3aa,v,patient,epi) %>% as.data.table()
+  seqs = df$cdr3aa
+  graph<-graph.empty(n = length(seqs), directed=F)
+  tmp<-stringdistmatrix(seqs,seqs,method=method_clustering)
+  graph<-add.edges(graph, t(which(tmp<=max_errs,arr.ind=T)))
+  graph = graph %>% set_edge_attr('weight', value = tmp[tmp<=max_errs])
+  graph<-igraph::simplify(graph)
+  graph<-set.vertex.attribute(graph, 'label', V(graph), seqs)
+  graph<-set.vertex.attribute(graph, 'vgene', V(graph), df$v)
+  graph<-set.vertex.attribute(graph, 'patient', V(graph), df$patient)
+  graph<-set.vertex.attribute(graph, 'epi', V(graph), df$epi)
+  return(graph)
+}
+
+
+igraph_from_data_cdr3.2_no_epi<-function(df,max_errs=1) {
+  df = df %>% group_by(cdr3aa,v,patient) %>% as.data.table()
+  seqs = df$cdr3aa
+  graph<-graph.empty(n = length(seqs), directed=F)
+  tmp<-stringdistmatrix(seqs,seqs,method=method_clustering)
+  graph<-add.edges(graph, t(which(tmp<=max_errs,arr.ind=T)))
+  graph = graph %>% set_edge_attr('weight', value = tmp[tmp<=max_errs])
+  graph<-igraph::simplify(graph)
+  graph<-set.vertex.attribute(graph, 'label', V(graph), seqs)
+  graph<-set.vertex.attribute(graph, 'vgene', V(graph), df$v)
+  graph<-set.vertex.attribute(graph, 'patient', V(graph), df$patient)
+  return(graph)
+}
+```
+
+Cluster all, CD4, CD8, Undef
+
+```{r cluster and count members per patient}
+type_cds <- c('all', 'CD4', 'CD8', 'Undef')
+layout_for_graphs <- layout_nicely# layout_with_kk #layout_on_sphere #layout_nicely #lay#out_with_fr #layout_with_gem #layout_with_mds 
+
+#Constants
+max_dist <- 0
+path_result <- '~/../../Volumes/LTI/TeamFolder/Data/Petrovax/data_analysis/final_results/venn_used_6m_info/clones_from_venn/'
+path_all_files <- '~/../../Volumes/LTI/TeamFolder/Data/Petrovax/data_analysis/final_results/venn_used_6m_info/clones_from_venn/all_clones_all_cd_only_cdr3aa.txt'
+if (max_dist != 0) {
+  type_dist <- paste('max Hamming ', max_dist, sep='')
+} else {
+  type_dist <- 'Public clones'
+}
+
+for (type_cd in type_cds) {
+  db <- fread(path_all_files) %>% rename(epi = CD)
+
+  if (type_cd != 'all') {
+    db <- db %>% filter(epi == type_cd)
+  }
+  forpng_epi <- paste(path_result,'clusters/',type_cd,'_',max_dist,'_CD.png', sep = "")
+  forpng_vgen <- paste(path_result,'clusters/',type_cd,'_',max_dist,'_Vgen.png', sep = "")
+  forpng_source <- paste(path_result,'clusters/',type_cd,'_',max_dist,'_Source.png', sep = "")
+
+  gs_ant = igraph_from_data_cdr3.2(db,max_dist)
+  gs = delete.vertices(simplify(gs_ant), degree(gs_ant)==0)
+  E(gs)$weight[E(gs)$weight==0]<-0.5
+  
+  sub_tit = paste('Clustered ', gorder(gs), ' out of ', nrow(db), ' clones.')
+  clustered_clones <- as_long_data_frame(gs)
+  path_clustered_cloness = paste0(path_result, 'clusters/', type_cd, '_', max_dist, '_clustered_clones.txt')
+  fwrite(clustered_clones,file = path_clustered_cloness,sep="\t",quote = F)
+  
+  
+  
+  df.cluster <- data.frame(cdr3aa =character(),
+                    cluster=integer())
+   for (x in 1:length(split(V(gs)$label, components(gs)$membership))) {
+     df.cluster.1 <- data.frame(split(V(gs)$label, components(gs)$membership)[x], x)
+     names(df.cluster.1) <- c('cdr3aa', 'cluster')
+     df.cluster <- rbind(df.cluster, df.cluster.1)
+   }
+  df.cluster <- df.cluster %>% unique()
+  db.cluster = merge(x = db, y = df.cluster, by = "cdr3aa", all.x = TRUE)
+  
+  path_ant_with_clusters = paste0(path_result, 'clusters/', type_cd, '_', max_dist, '.txt')
+  fwrite(db.cluster,file = path_ant_with_clusters,sep="\t",quote = F)
+}
+
+
+
+```
+
+
+
+Cluster VDJdb and Adaptive together
+
+```{r plot all clones}
+type_folders <- c('only_cd', 'only_epi', 'cd_and_epi')
+
+#Constants
+max_dist <- 1
+path_all_files <- '~/../../Volumes/LTI/TeamFolder/Data/Petrovax/data_analysis/final_results/homology_with_VDJdb_and_adaptive/results_vdjdb_adaptive/'
+if (max_dist != 0) {
+  type_dist <- paste('max Hamming ', max_dist, sep='')
+} else {
+  type_dist <- 'Public clones'
+}
+
+
+for (type_folder in type_folders) {
+path_to_all_files <-  paste(path_all_files, type_folder, '/', sep='')
+path_to_all_files <- list.files(path_to_all_files, pattern='.*.txt', full.names=TRUE)
+
+for (path_file in path_to_all_files) {
+
+to_tit <-  strsplit(tail(strsplit(path_file, '/')[[1]], n=1), '.txt')[[1]][1]
+#### table should be in working directory in VDJdb format, source (eg patient's id) of CDR3 should be in 'meta.subject.id' column ####
+db <- fread(path_file)
+
+#Mutate patients
+db <- db %>%
+  mutate(patient = ifelse(patient != 'Adaptive' & patient != 'VDJdb', 'patient',
+               ifelse(patient == 'Adaptive' , 'Adaptive', ifelse(patient == 'VDJdb' , 'VDJdb', NA))))
+
+#### select layout for graphs ####
+layout_for_graphs <- layout_nicely# layout_with_kk #layout_on_sphere #layout_nicely #lay#out_with_fr #layout_with_gem #layout_with_mds #layout_with_graphopt #layout_as_star #layout_on_grid #layout_as_tree
+
+#### alpha ####
+ant_ori <- db %>% select(cdr3aa,v,patient,epi) #%>% unique()
+forpng_epi <- paste(path_all_files,'plots/',type_folder, '/', to_tit,'_',max_dist,'_Epitope.png', sep = "")
+forpng_vgen <- paste(path_all_files,'plots/',type_folder, '/', to_tit,'_',max_dist,'_Vgen.png', sep = "")
+forpng_source <- paste(path_all_files,'plots/',type_folder, '/', to_tit,'_',max_dist,'_Source.png', sep = "")
+
+### selects top 7 V-genes ###
+top_vg = ant_ori %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table() %>% arrange(desc(v_n)) %>% head(7)
+if (nrow(ant_ori %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table()) > 7) {
+  ant = ant_ori %>% mutate(v = ifelse(v %in% top_vg$v,v,"others")) %>% as.data.table()
+} else {
+  ant = ant_ori
+}
+
+### selects top 7 V-genes ###
+top_jg = ant_ori %>% group_by(j) %>% summarise(j_n = n()) %>% as.data.table() %>% arrange(desc(j_n)) %>% head(7)
+if (nrow(ant_ori %>% group_by(j) %>% summarise(j_n = n()) %>% as.data.table()) > 7) {
+  ant = ant %>% mutate(j = ifelse(j %in% top_vg$j,j,"others")) %>% as.data.table()
+} else {
+  ant = ant
+}
+
+
+### max Levenstein/Hamming distance = second argument in igraph function ###
+gs_ant = igraph_from_data_cdr3.2(ant,max_dist)
+gs = delete.vertices(simplify(gs_ant), degree(gs_ant)==0)
+E(gs)$weight[E(gs)$weight==0]<-0.5
+
+sub_tit = paste('Clustered ', gorder(gs), ' out of ', nrow(db), ' clones.')
+
+### plot Epitopes-genes ###
+
+coul1 <- c('#72D473', '#69EBD0', '#D6EC74', '#DCB977', '#E69696', '#7AA5E5', '#A487E8', '#E991EB',
+                  '#2C9C86', '#AC8E61', '#CFBCD0', '#587196', '#447845')
+
+if (nrow(ant_ori %>% group_by(epi) %>% summarise(epi_n = n()) %>% as.data.table()) > 15) {
+  my_color <- ifelse(V(gs)$epi == 'others', "#A9A9A9", coul1[as.numeric(as.factor(V(gs)$epi))])
+} else {
+  my_color <- coul1[as.numeric(as.factor(V(gs)$epi))]
+}
+V(gs)$color = my_color
+legend_cats = data.frame(attr = unique(vertex_attr(gs, "epi")),
+                         color = unique(V(gs)$color))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+png(forpng_epi, 700, 700)
+set.seed(42)
+simplify(gs)
+if (max_dist == 0) {
+  e_label = NA
+  e_width = 5/(E(gs)$weight+1)
+} else {
+  e_label = NA#E(gs)$weight/2
+  e_width = 15/(E(gs)$weight+1)
+}
+plot.igraph(gs, layout = layout_for_graphs, asp = 1,
+            #main = fortitle,
+            ## nodes =======================================
+            vertex.label = NA,#V(gs)$vgene,
+            vertex.size=7,
+            ## edges =======================================
+            edge.label = e_label,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=e_width,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0.05#,            ## 0 to 1 or TRUE (0.5)
+)
+title(main=paste(to_tit, type_dist,sep='\n'), sub = sub_tit)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "Specificity")
+dev.off()
+
+### plot V-genes ###
+coul1 <- rainbow(length(unique(V(gs)$vgene)), alpha=.5)
+
+if (nrow(ant_ori %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table()) > 15) {
+  my_color <- ifelse(V(gs)$vgene == 'others', "#A9A9A9", coul1[as.numeric(as.factor(V(gs)$vgene))])
+} else {
+  my_color <- coul1[as.numeric(as.factor(V(gs)$vgene))]
+}
+V(gs)$color = my_color
+legend_cats = data.frame(attr = unique(vertex_attr(gs, "vgene")),
+                         color = unique(V(gs)$color))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+png(forpng_vgen, 700, 700)
+set.seed(42)
+simplify(gs)
+if (max_dist == 0) {
+  e_label = NA
+  e_width = 5/(E(gs)$weight+1)
+} else {
+  e_label = NA#E(gs)$weight/2
+  e_width = 15/(E(gs)$weight+1)
+}
+plot.igraph(gs, layout = layout_for_graphs, asp = 1,
+            #main = fortitle,
+            ## nodes =======================================
+            vertex.label = NA,#V(gs)$vgene,
+            vertex.size=7,
+            ## edges =======================================
+            edge.label = e_label,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=e_width,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0.05#,            ## 0 to 1 or TRUE (0.5)
+)
+title(main=paste(to_tit, type_dist, sep='\n'), sub = sub_tit)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "V genes")
+dev.off()
+
+### plot J-genes ###
+coul1 <- rainbow(length(unique(V(gs)$vgene)), alpha=.5)
+
+if (nrow(ant_ori %>% group_by(j) %>% summarise(j_n = n()) %>% as.data.table()) > 15) {
+  my_color <- ifelse(V(gs)$jgene == 'others', "#A9A9A9", coul1[as.numeric(as.factor(V(gs)$jgene))])
+} else {
+  my_color <- coul1[as.numeric(as.factor(V(gs)$jgene))]
+}
+V(gs)$color = my_color
+legend_cats = data.frame(attr = unique(vertex_attr(gs, "jgene")),
+                         color = unique(V(gs)$color))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+png(forpng_jgen, 700, 700)
+set.seed(42)
+simplify(gs)
+if (max_dist == 0) {
+  e_label = NA
+  e_width = 5/(E(gs)$weight+1)
+} else {
+  e_label = NA#E(gs)$weight/2
+  e_width = 15/(E(gs)$weight+1)
+}
+plot.igraph(gs, layout = layout_for_graphs, asp = 1,
+            #main = fortitle,
+            ## nodes =======================================
+            vertex.label = NA,#V(gs)$vgene,
+            vertex.size=7,
+            ## edges =======================================
+            edge.label = e_label,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=e_width,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0.05#,            ## 0 to 1 or TRUE (0.5)
+)
+title(main=paste(to_tit, type_dist, sep='\n'), sub = sub_tit)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "J genes")
+dev.off()
+
+### plot sources ###
+coul2 <- rainbow(length(unique(V(gs)$patient)), alpha=.5)
+V(gs)$color = coul2[as.numeric(as.factor(V(gs)$patient))]
+legend_cats = data.frame(attr = unique(vertex_attr(gs, "patient")),
+                         color = unique(V(gs)$color))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+set.seed(42)
+png(forpng_source, 700, 700)
+plot.igraph(gs, layout = layout_for_graphs, asp = 1,
+            #main = fortitle1,
+            ## nodes =======================================
+            vertex.label = NA,#V(gs)$patient,
+            vertex.size=7,
+            ## edges =======================================
+            edge.label = e_label,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=e_width,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0.05#,            ## 0 to 1 or TRUE (0.5)
+            #vertex.color=coul2[as.numeric(as.factor(V(gs)$vgene))]
+)
+title(main=paste(to_tit, type_dist,sep='\n'), sub = sub_tit)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "Sources")
+dev.off()
+
+}}
+```
+
+num of clusters per epitope
+
+```{r}
+df <- data.frame(CD=character(),
+                 Epitope=character(),
+                 Distance=character(),
+                 Method=character(),
+                 Number_clones_in_clusters=integer(),
+                 Fract_clustered=integer(),
+                 Number_of_clusters=integer(),
+                 Average_size_of_cluster=character(),
+                 stringsAsFactors=FALSE)
+
+type_folder <- 'only_cd'
+
+#Constants
+path_all_files <- '~/../../Volumes/LTI/TeamFolder/Data/Petrovax/data_analysis/final_results/homology_with_VDJdb_and_adaptive/results_vdjdb_adaptive/'
+max_dists <-  c(0,1)
+
+for (max_dist in max_dists) {
+if (max_dist != 0) {
+  type_dist <- paste('max Hamming ', max_dist, sep='')
+} else {
+  type_dist <- 'Public clones'
+}
+
+path_to_all_files <-  paste(path_all_files, type_folder, '/per_epitope/', sep='')
+path_to_all_files <- list.files(path_to_all_files, pattern='.*.txt', full.names=TRUE)
+
+for (path_file in path_to_all_files) {
+
+to_tit <-  strsplit(tail(strsplit(path_file, '/')[[1]], n=1), '.txt')[[1]][1]
+print(to_tit)
+#### table should be in working directory in VDJdb format, source (eg patient's id) of CDR3 should be in 'meta.subject.id' column ####
+db <- fread(path_file)
+
+#Mutate patients
+db <- db %>%
+  mutate(patient = ifelse(patient != 'Adaptive' & patient != 'VDJdb', 'patient',
+               ifelse(patient == 'Adaptive' , 'Adaptive', ifelse(patient == 'VDJdb' , 'VDJdb', NA))))
+
+#### select layout for graphs ####
+layout_for_graphs <- layout_nicely# layout_with_kk #layout_on_sphere #layout_nicely #lay#out_with_fr #layout_with_gem #layout_with_mds #layout_with_graphopt #layout_as_star #layout_on_grid #layout_as_tree
+
+#### alpha ####
+ant_ori <- db %>% select(cdr3aa,v,patient,epi) #%>% unique()
+forpng_epi <- paste(path_all_files,'plots/',type_folder, '/per_epitope/', to_tit,'_',max_dist,'_Epitope.png', sep = "")
+forpng_vgen <- paste(path_all_files,'plots/',type_folder, '/per_epitope/', to_tit,'_',max_dist,'_Vgen.png', sep = "")
+forpng_source <- paste(path_all_files,'plots/',type_folder, '/per_epitope/', to_tit,'_',max_dist,'_Source.png', sep = "")
+
+### selects top 14 V-genes ###
+top_vg = ant_ori %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table() %>% arrange(desc(v_n)) %>% head(14)
+if (nrow(ant_ori %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table()) > 15) {
+  ant = ant_ori %>% mutate(v = ifelse(v %in% top_vg$v,v,"others")) %>% as.data.table()
+} else {
+  ant = ant_ori
+}
+
+### selects top 14 Epitopes ###
+top_epi = ant %>% group_by(epi) %>% summarise(epi_n = n()) %>% as.data.table() %>% arrange(desc(epi_n)) %>% head(14)
+if (nrow(ant %>% group_by(epi) %>% summarise(epi_n = n()) %>% as.data.table()) > 15) {
+  ant = ant %>% mutate(epi = ifelse(epi %in% top_epi$epi,epi,"others")) %>% as.data.table()
+} else {
+  ant = ant
+}
+
+
+### max Levenstein/Hamming distance = second argument in igraph function ###
+gs_ant = igraph_from_data_cdr3.2(ant,max_dist)
+gs = delete.vertices(simplify(gs_ant), degree(gs_ant)==0)
+E(gs)$weight[E(gs)$weight==0]<-0.5
+
+### make summary
+comp_gs = components(gs)
+cd <- strsplit(to_tit, '_')[[1]][1]
+epitope <- strsplit(to_tit, '_')[[1]][2]
+
+df.allel <- data.frame(cd, epitope, max_dist, method_clustering, gorder(gs), gorder(gs)/nrow(ant),
+                       comp_gs$no, mean(comp_gs$csize))
+names(df.allel) <- c('CD', 'Epitope', 'Distance', 'Method', 'Number_clones_in_clusters', 'Fract_clustered',
+                     'Number_of_clusters', 'Average_size_of_cluster')
+df <- rbind(df, df.allel)
+if (gorder(gs) > 0) {
+sub_tit = paste('Clustered ', gorder(gs))
+
+### plot Epitopes-genes ###
+
+coul1 <- rainbow(length(unique(V(gs)$epi)), alpha=.5)
+
+if (nrow(ant_ori %>% group_by(epi) %>% summarise(epi_n = n()) %>% as.data.table()) > 15) {
+  my_color <- ifelse(V(gs)$epi == 'others', "#A9A9A9", coul1[as.numeric(as.factor(V(gs)$epi))])
+} else {
+  my_color <- coul1[as.numeric(as.factor(V(gs)$epi))]
+}
+V(gs)$color = my_color
+legend_cats = data.frame(attr = unique(vertex_attr(gs, "epi")),
+                         color = unique(V(gs)$color))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+png(forpng_epi, 700, 700)
+set.seed(42)
+simplify(gs)
+if (max_dist == 0) {
+  e_label = NA
+  e_width = 5/(E(gs)$weight+1)
+} else {
+  e_label = E(gs)$weight/2
+  e_width = 15/(E(gs)$weight+1)
+}
+plot.igraph(gs, layout = layout_for_graphs, asp = 1,
+            #main = fortitle,
+            ## nodes =======================================
+            vertex.label = NA,#V(gs)$vgene,
+            vertex.size=7,
+            ## edges =======================================
+            edge.label = e_label,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=e_width,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0.05#,            ## 0 to 1 or TRUE (0.5)
+)
+title(main=paste(to_tit, type_dist,sep='\n'), sub = sub_tit)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "Specificity")
+dev.off()
+
+### plot V-genes ###
+coul1 <- rainbow(length(unique(V(gs)$vgene)), alpha=.5)
+
+if (nrow(ant_ori %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table()) > 15) {
+  my_color <- ifelse(V(gs)$vgene == 'others', "#A9A9A9", coul1[as.numeric(as.factor(V(gs)$vgene))])
+} else {
+  my_color <- coul1[as.numeric(as.factor(V(gs)$vgene))]
+}
+V(gs)$color = my_color
+legend_cats = data.frame(attr = unique(vertex_attr(gs, "vgene")),
+                         color = unique(V(gs)$color))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+png(forpng_vgen, 700, 700)
+
+set.seed(42)
+simplify(gs)
+if (max_dist == 0) {
+  e_label = NA
+  e_width = 5/(E(gs)$weight+1)
+} else {
+  e_label = E(gs)$weight/2
+  e_width = 15/(E(gs)$weight+1)
+}
+plot.igraph(gs, layout = layout_for_graphs, asp = 1,
+            #main = fortitle,
+            ## nodes =======================================
+            vertex.label = NA,#V(gs)$vgene,
+            vertex.size=7,
+            ## edges =======================================
+            edge.label = e_label,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=e_width,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0.05#,            ## 0 to 1 or TRUE (0.5)
+)
+title(main=paste(to_tit, type_dist, sep='\n'), sub = sub_tit)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "V genes")
+dev.off()
+
+### plot sources ###
+coul2 <- rainbow(length(unique(V(gs)$patient)), alpha=.5)
+V(gs)$color = coul2[as.numeric(as.factor(V(gs)$patient))]
+legend_cats = data.frame(attr = unique(vertex_attr(gs, "patient")),
+                         color = unique(V(gs)$color))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+set.seed(42)
+png(forpng_source, 700, 700)
+plot.igraph(gs, layout = layout_for_graphs, asp = 1,
+            #main = fortitle1,
+            ## nodes =======================================
+            vertex.label = NA,#V(gs)$patient,
+            vertex.size=7,
+            ## edges =======================================
+            edge.label = e_label,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=e_width,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0.05#,            ## 0 to 1 or TRUE (0.5)
+            #vertex.color=coul2[as.numeric(as.factor(V(gs)$vgene))]
+)
+title(main=paste(to_tit, type_dist,sep='\n'), sub = sub_tit)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "Sources")
+dev.off()
+}
+}
+}
+```
+
+```{r}
+outfile = paste(path_all_files,'/summary_num_clustes_avr_size.txt', sep = "")
+fwrite(df,file = outfile,sep="\t",quote = F)
+
+```
+
+Make clustering epitope-specific clones with and without wrong epi-wpecificity
+
+```{r}
+
+igraph_from_data_cdr3.2<-function(df,max_errs=1) {
+  df = df %>% group_by(cdr3aa,v,patient,epi) %>% as.data.table()
+  seqs = df$cdr3aa
+  graph<-graph.empty(n = length(seqs), directed=F)
+  tmp<-stringdistmatrix(seqs,seqs,method=method_clustering)
+  graph<-add.edges(graph, t(which(tmp<=max_errs,arr.ind=T)))
+  graph = graph %>% set_edge_attr('weight', value = tmp[tmp<=max_errs])
+  graph<-igraph::simplify(graph)
+  graph<-set.vertex.attribute(graph, 'label', V(graph), seqs)
+  graph<-set.vertex.attribute(graph, 'vgene', V(graph), df$v)
+  graph<-set.vertex.attribute(graph, 'patient', V(graph), df$patient)
+  graph<-set.vertex.attribute(graph, 'epi', V(graph), df$epi)
+  return(graph)
+}
+  
+max_dist = 1
+epitopes = c('KCY', 'QYI', 'RLQ', 'YLQ')
+path_all_files = '~/../../Volumes/LTI/TeamFolder/Data/Petrovax/data_analysis/final_results/homology_with_VDJdb_and_adaptive/epitopes_wo_wrong_epi/'
+types = c(TRUE, FALSE)
+
+for (epi in epitopes){
+  for (wrong in types) {
+  
+  if (wrong == TRUE) {
+    folder = 'with_wrong'
+  } else {
+    folder = 'wo_wrong'
+  }
+  
+  path_file = paste(path_all_files, 'with_vdjmatch/', folder, '/', epi, '.txt', sep='')
+  
+  db <- fread(path_file)
+
+  #Mutate patients
+  db <- db %>%
+    mutate(patient = ifelse(patient != 'Adaptive' & patient != 'VDJdb', 'patient',
+                 ifelse(patient == 'Adaptive' , 'Adaptive', ifelse(patient == 'VDJdb' , 'VDJdb', NA))))
+  to_tit = epi
+  #### select layout for graphs ####
+  layout_for_graphs <- layout_nicely# layout_with_kk #layout_on_sphere #layout_nicely #lay#out_with_fr #layout_with_gem #layout_with_mds #layout_with_graphopt #layout_as_star #layout_on_grid #layout_as_tree
+  
+  
+  ant_ori <- db %>% select(cdr3aa,v,patient,epi) #%>% unique()
+  forpng_epi <- paste(path_all_files,'plots/',folder, '/', to_tit,'_',max_dist,'_Epitope.png', sep = "")
+  forpng_vgen <- paste(path_all_files,'plots/',folder, '/', to_tit,'_',max_dist,'_Vgen.png', sep = "")
+  forpng_source <- paste(path_all_files,'plots/',folder, '/', to_tit,'_',max_dist,'_Source.png', sep = "")
+
+  ### selects top 14 V-genes ###
+  top_vg = ant_ori %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table() %>% arrange(desc(v_n)) %>% head(14)
+  if (nrow(ant_ori %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table()) > 15) {
+    ant = ant_ori %>% mutate(v = ifelse(v %in% top_vg$v,v,"others")) %>% as.data.table()
+  } else {
+    ant = ant_ori
+  }
+
+  
+  ### max Levenstein/Hamming distance = second argument in igraph function ###
+  gs_ant = igraph_from_data_cdr3.2(ant,max_dist)
+  gs = gs_ant
+  #gs = delete.vertices(simplify(gs_ant), degree(gs_ant)==0)
+  E(gs)$weight[E(gs)$weight==0]<-0.5
+  
+  sub_tit = paste('Clustered ', gorder(gs), ' out of ', nrow(db), ' clones.')
+  
+  ### plot Epitopes-genes ###
+  
+  coul1 <- rainbow(length(unique(V(gs)$epi)), alpha=.5)
+  
+  if (nrow(ant_ori %>% group_by(epi) %>% summarise(epi_n = n()) %>% as.data.table()) > 15) {
+    my_color <- ifelse(V(gs)$epi == 'others', "#A9A9A9", coul1[as.numeric(as.factor(V(gs)$epi))])
+  } else {
+    my_color <- coul1[as.numeric(as.factor(V(gs)$epi))]
+  }
+  V(gs)$color = my_color
+  legend_cats = data.frame(attr = unique(vertex_attr(gs, "epi")),
+                           color = unique(V(gs)$color))
+  legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+  png(forpng_epi, 700, 700)
+  set.seed(42)
+  simplify(gs)
+  if (max_dist == 0) {
+    e_label = NA
+    e_width = 5/(E(gs)$weight+1)
+  } else {
+    e_label = E(gs)$weight/2
+    e_width = 15/(E(gs)$weight+1)
+  }
+  plot.igraph(gs, layout = layout_for_graphs, asp = 1,
+              #main = fortitle,
+              ## nodes =======================================
+              vertex.label = NA,#V(gs)$vgene,
+              vertex.size=7,
+              ## edges =======================================
+              edge.label = e_label,
+              edge.label.cex = 1.3,
+              edge.color = "lightgray",
+              edge.width=e_width,
+              edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+              ## dotdash, longdash, or twodash
+              edge.curved = 0.05#,            ## 0 to 1 or TRUE (0.5)
+  )
+  title(main=paste(to_tit, type_dist,sep='\n'), sub = sub_tit)
+  legend_cats$color = as.character(legend_cats$color)
+  legend(x = "bottomleft",      ## position, also takes x,y coordinates
+         legend = legend_cats$attr,
+         pch = 19,              ## legend symbols see ?points
+         col = legend_cats$color,
+         bty = "n",
+         title = "Specificity")
+  dev.off()
+  
+  ### plot V-genes ###
+  coul1 <- rainbow(length(unique(V(gs)$vgene)), alpha=.5)
+  
+  if (nrow(ant_ori %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table()) > 15) {
+    my_color <- ifelse(V(gs)$vgene == 'others', "#A9A9A9", coul1[as.numeric(as.factor(V(gs)$vgene))])
+  } else {
+    my_color <- coul1[as.numeric(as.factor(V(gs)$vgene))]
+  }
+  V(gs)$color = my_color
+  legend_cats = data.frame(attr = unique(vertex_attr(gs, "vgene")),
+                           color = unique(V(gs)$color))
+  legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+  png(forpng_vgen, 700, 700)
+  set.seed(42)
+  simplify(gs)
+  if (max_dist == 0) {
+    e_label = NA
+    e_width = 5/(E(gs)$weight+1)
+  } else {
+    e_label = E(gs)$weight/2
+    e_width = 15/(E(gs)$weight+1)
+  }
+  plot.igraph(gs, layout = layout_for_graphs, asp = 1,
+              #main = fortitle,
+              ## nodes =======================================
+              vertex.label = NA,#V(gs)$vgene,
+              vertex.size=7,
+              ## edges =======================================
+              edge.label = e_label,
+              edge.label.cex = 1.3,
+              edge.color = "lightgray",
+              edge.width=e_width,
+              edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+              ## dotdash, longdash, or twodash
+              edge.curved = 0.05#,            ## 0 to 1 or TRUE (0.5)
+  )
+  title(main=paste(to_tit, type_dist, sep='\n'), sub = sub_tit)
+  legend_cats$color = as.character(legend_cats$color)
+  legend(x = "bottomleft",      ## position, also takes x,y coordinates
+         legend = legend_cats$attr,
+         pch = 19,              ## legend symbols see ?points
+         col = legend_cats$color,
+         bty = "n",
+         title = "V genes")
+  dev.off()
+  
+  ### plot sources ###
+  coul2 <- rainbow(length(unique(V(gs)$patient)), alpha=.5)
+  V(gs)$color = coul2[as.numeric(as.factor(V(gs)$patient))]
+  legend_cats = data.frame(attr = unique(vertex_attr(gs, "patient")),
+                           color = unique(V(gs)$color))
+  legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+  set.seed(42)
+  png(forpng_source, 700, 700)
+  plot.igraph(gs, layout = layout_for_graphs, asp = 1,
+              #main = fortitle1,
+              ## nodes =======================================
+              vertex.label = NA,#V(gs)$patient,
+              vertex.size=7,
+              ## edges =======================================
+              edge.label = e_label,
+              edge.label.cex = 1.3,
+              edge.color = "lightgray",
+              edge.width=e_width,
+              edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+              ## dotdash, longdash, or twodash
+              edge.curved = 0.05#,            ## 0 to 1 or TRUE (0.5)
+              #vertex.color=coul2[as.numeric(as.factor(V(gs)$vgene))]
+  )
+  title(main=paste(to_tit, type_dist,sep='\n'), sub = sub_tit)
+  legend_cats$color = as.character(legend_cats$color)
+  legend(x = "bottomleft",      ## position, also takes x,y coordinates
+         legend = legend_cats$attr,
+         pch = 19,              ## legend symbols see ?points
+         col = legend_cats$color,
+         bty = "n",
+         title = "Sources")
+  dev.off()
+}}
+```
+
+Cluster after ALICE with total expansions
+
+```{r}
+igraph_from_data_cdr_alice_pgen<-function(df,max_errs=1) {
+  df = df %>% group_by(cdr3aa,v,Pgen,type) %>% as.data.table()
+  seqs = df$cdr3aa
+  graph<-graph.empty(n = length(seqs), directed=F)
+  tmp<-stringdistmatrix(seqs,seqs,method=method_clustering)
+  graph<-add.edges(graph, t(which(tmp<=max_errs,arr.ind=T)))
+  graph = graph %>% set_edge_attr('weight', value = tmp[tmp<=max_errs])
+  graph<-igraph::simplify(graph)
+  graph<-set.vertex.attribute(graph, 'label', V(graph), seqs)
+  graph<-set.vertex.attribute(graph, 'vgene', V(graph), df$v)
+  graph<-set.vertex.attribute(graph, 'Pgen', V(graph), df$Pgen)
+  graph<-set.vertex.attribute(graph, 'type', V(graph), df$type)
+  return(graph)
+}
+
+method_clustering = "hamming"
+max_dist = 0
+if (max_dist != 0) {
+  type_dist <- paste('max Hamming ', max_dist, sep='')
+} else {
+  type_dist <- 'Public clones'
+}
+patients = c('1752')#,'1800','1753', '1775', '1782', '1780', '1769', '1787', '1765', '1813', '1771', '1776', '1810', '1802', '1790', '1792', '1757')
+path_all_hits = '~/../../Volumes/LTI/TeamFolder/Data/Petrovax/data_analysis/final_results/alice/hits/wells_s6m/'
+for (patient in patients){
+  path_to_hit = paste0(path_all_hits, patient, '.txt')
+  
+  db <- fread(path_to_hit)
+  to_tit = patient
+  layout_for_graphs <- layout_nicely# layout_with_kk #layout_on_sphere #layout_nicely #lay#out_with_fr #layout_with_gem #layout_with_mds #layout_with_graphopt #layout_as_star #layout_on_grid #layout_as_tree
+  
+  
+  ant_ori <- db 
+  forpng_epi <- paste(path_all_hits,'plots/',to_tit,'_',max_dist,'_Pgen.png', sep = "")
+  forpng_vgen <- paste(path_all_hits,'plots/',to_tit,'_',max_dist,'_Vgen.png', sep = "")
+  forpng_source <- paste(path_all_hits,'plots/',to_tit,'_',max_dist,'_Type.png', sep = "")
+
+  ### selects top 14 V-genes ###
+  top_vg = ant_ori %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table() %>% arrange(desc(v_n)) %>% head(14)
+  if (nrow(ant_ori %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table()) > 15) {
+    ant = ant_ori %>% mutate(v = ifelse(v %in% top_vg$v,v,"others")) %>% as.data.table()
+  } else {
+    ant = ant_ori
+  }
+
+  
+  ### max Levenstein/Hamming distance = second argument in igraph function ###
+  gs_ant = igraph_from_data_cdr_alice_pgen(ant,max_dist)
+  #gs = gs_ant
+  gs = delete.vertices(simplify(gs_ant), degree(gs_ant)==0)
+  E(gs)$weight[E(gs)$weight==0]<-0.5
+  
+  sub_tit = paste('Clustered ', gorder(gs), ' out of ', nrow(db), ' clones.')
+  
+  ### plot Pgen ###
+  
+  #coul1 <- rainbow(length(unique(V(gs)$Pgen)), alpha=.5)
+  
+  #my_color <- coul1[as.numeric(as.factor(V(gs)$Pgen))]
+  
+  V(gs)$color = scales::dscale(V(gs)$Pgen %>% cut(5), sequential_pal)
+ # legend_cats = data.frame(attr = unique(vertex_attr(gs, "Pgen")),
+  #                         color = unique(V(gs)$color))
+  #legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+  png(forpng_epi, 700, 700)
+  set.seed(42)
+  simplify(gs)
+  if (max_dist == 0) {
+    e_label = NA
+    e_width = 5/(E(gs)$weight+1)
+  } else {
+    e_label = E(gs)$weight/2
+    e_width = 15/(E(gs)$weight+1)
+  }
+  plot.igraph(gs, layout = layout_for_graphs, asp = 1,
+              legend = TRUE, 
+              #main = fortitle,
+              ## nodes =======================================
+              vertex.label = NA,#V(gs)$vgene,
+              vertex.size=7,
+              ## edges =======================================
+              edge.label = NA, #e_label,
+              edge.label.cex = 1.3,
+              edge.color = "lightgray",
+              edge.width=e_width,
+              edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+              ## dotdash, longdash, or twodash
+              edge.curved = 0.05#,            ## 0 to 1 or TRUE (0.5)
+  )
+  title(main=paste(to_tit, type_dist,sep='\n'), sub = sub_tit)
+  #legend_cats$color = as.character(legend_cats$color)
+  #legend(x = "bottomleft",      ## position, also takes x,y coordinates
+  #       legend = legend_cats$attr,
+  #       pch = 19,              ## legend symbols see ?points
+  #       col = legend_cats$color,
+  #       bty = "n",
+  #       title = "Pgen")
+  dev.off()
+  
+  ### plot V-genes ###
+  coul1 <- rainbow(length(unique(V(gs)$vgene)), alpha=.5)
+  
+  if (nrow(ant_ori %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table()) > 15) {
+    my_color <- ifelse(V(gs)$vgene == 'others', "#A9A9A9", coul1[as.numeric(as.factor(V(gs)$vgene))])
+  } else {
+    my_color <- coul1[as.numeric(as.factor(V(gs)$vgene))]
+  }
+  V(gs)$color = my_color
+  legend_cats = data.frame(attr = unique(vertex_attr(gs, "vgene")),
+                           color = unique(V(gs)$color))
+  legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+  png(forpng_vgen, 700, 700)
+  set.seed(42)
+  simplify(gs)
+  if (max_dist == 0) {
+    e_label = NA
+    e_width = 5/(E(gs)$weight+1)
+  } else {
+    e_label = E(gs)$weight/2
+    e_width = 15/(E(gs)$weight+1)
+  }
+  plot.igraph(gs, layout = layout_for_graphs, asp = 1,
+              #main = fortitle,
+              ## nodes =======================================
+              vertex.label = NA,#V(gs)$vgene,
+              vertex.size=7,
+              ## edges =======================================
+              edge.label = NA,#e_label,
+              edge.label.cex = 1.3,
+              edge.color = "lightgray",
+              edge.width=e_width,
+              edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+              ## dotdash, longdash, or twodash
+              edge.curved = 0.05#,            ## 0 to 1 or TRUE (0.5)
+  )
+  title(main=paste(to_tit, type_dist, sep='\n'), sub = sub_tit)
+  legend_cats$color = as.character(legend_cats$color)
+  legend(x = "bottomleft",      ## position, also takes x,y coordinates
+         legend = legend_cats$attr,
+         pch = 19,              ## legend symbols see ?points
+         col = legend_cats$color,
+         bty = "n",
+         title = "V genes")
+  dev.off()
+  
+  ### plot Type ###
+  coul2 <- rainbow(length(unique(V(gs)$type)), alpha=.5)
+  V(gs)$color = coul2[as.numeric(as.factor(V(gs)$type))]
+  legend_cats = data.frame(attr = unique(vertex_attr(gs, "type")),
+                           color = unique(V(gs)$color))
+  legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+  set.seed(42)
+  png(forpng_source, 700, 700)
+  plot.igraph(gs, layout = layout_for_graphs, asp = 1,
+              #main = fortitle1,
+              ## nodes =======================================
+              vertex.label = NA,#V(gs)$type,
+              vertex.size=7,
+              ## edges =======================================
+              edge.label = NA, #e_label,
+              edge.label.cex = 1.3,
+              edge.color = "lightgray",
+              edge.width=e_width,
+              edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+              ## dotdash, longdash, or twodash
+              edge.curved = 0.05#,            ## 0 to 1 or TRUE (0.5)
+              #vertex.color=coul2[as.numeric(as.factor(V(gs)$vgene))]
+  )
+  title(main=paste(to_tit, type_dist,sep='\n'), sub = sub_tit)
+  legend_cats$color = as.character(legend_cats$color)
+  legend(x = "bottomleft",      ## position, also takes x,y coordinates
+         legend = legend_cats$attr,
+         pch = 19,              ## legend symbols see ?points
+         col = legend_cats$color,
+         bty = "n",
+         title = "Tyepe")
+  dev.off()
+}
+
+```
+

@@ -1,0 +1,791 @@
+---
+title: "Figure 5 - clustering clones"
+output: html_notebook
+---
+
+```{r install packages and define functions}
+library("igraph")
+library("data.table")
+library("stringdist")
+library("Biostrings")
+library("dplyr")
+library("tibble")
+library("ggplot2")
+library(RColorBrewer)
+
+install.packages("ggseqlogo")
+install.packages(svglite)
+require(ggplot2)
+require(ggseqlogo)
+
+install.packages("ggalluvial")
+library(ggalluvial)
+
+#### choose distance - Levestein or Hamming ####
+
+igraph_from_data_cdr3.2_all_data<-function(df,max_errs=1) {
+  df = df %>% group_by(cdr3aa,v,j,together,cdr3nt) %>% as.data.table()
+  seqs = df$cdr3aa
+  graph<-graph.empty(n = length(seqs), directed=F)
+  tmp<-stringdistmatrix(seqs,seqs,method=method_clustering)
+  graph<-add.edges(graph, t(which(tmp<=max_errs,arr.ind=T)))
+  graph = graph %>% set_edge_attr('weight', value = tmp[tmp<=max_errs])
+  graph<-igraph::simplify(graph)
+  graph<-set.vertex.attribute(graph, 'label', V(graph), seqs)
+  graph<-set.vertex.attribute(graph, 'vgene', V(graph), df$v)
+  graph<-set.vertex.attribute(graph, 'jgene', V(graph), df$j)
+  graph<-set.vertex.attribute(graph, 'cdr3nt', V(graph), df$cdr3nt)
+  graph<-set.vertex.attribute(graph, 'together', V(graph), df$together)
+  return(graph)
+}
+igraph_from_data_cdr3.2_w_clusetrs_and_pies<-function(df,max_errs=1) {
+  df = df %>% group_by(cdr3aa,v,j,together,cdr3nt,cluster,size) %>% as.data.table()
+  seqs = df$cdr3aa
+  graph<-graph.empty(n = length(seqs), directed=F)
+  tmp<-stringdistmatrix(seqs,seqs,method=method_clustering)
+  graph<-add.edges(graph, t(which(tmp<=max_errs,arr.ind=T)))
+  graph = graph %>% set_edge_attr('weight', value = tmp[tmp<=max_errs])
+  graph<-igraph::simplify(graph)
+  graph<-set.vertex.attribute(graph, 'label', V(graph), seqs)
+  graph<-set.vertex.attribute(graph, 'vgene', V(graph), df$v)
+  graph<-set.vertex.attribute(graph, 'jgene', V(graph), df$j)
+  graph<-set.vertex.attribute(graph, 'cdr3nt', V(graph), df$cdr3nt)
+  graph<-set.vertex.attribute(graph, 'together', V(graph), df$together)
+  graph<-set.vertex.attribute(graph, 'cluster', V(graph), df$cluster)
+  graph<-set.vertex.attribute(graph, 'size', V(graph), df$size)
+  return(graph)
+}
+
+igraph_from_data_cdr3.2_w_pies_wo_clusters<-function(df,max_errs=1) {
+  df = df %>% group_by(cdr3aa,v,j,together,cdr3nt,epi,size) %>% as.data.table()
+  seqs = df$cdr3aa
+  graph<-graph.empty(n = length(seqs), directed=F)
+  tmp<-stringdistmatrix(seqs,seqs,method=method_clustering)
+  graph<-add.edges(graph, t(which(tmp<=max_errs,arr.ind=T)))
+  graph = graph %>% set_edge_attr('weight', value = tmp[tmp<=max_errs])
+  graph<-igraph::simplify(graph)
+  graph<-set.vertex.attribute(graph, 'label', V(graph), seqs)
+  graph<-set.vertex.attribute(graph, 'vgene', V(graph), df$v)
+  graph<-set.vertex.attribute(graph, 'jgene', V(graph), df$j)
+  graph<-set.vertex.attribute(graph, 'cdr3nt', V(graph), df$cdr3nt)
+  graph<-set.vertex.attribute(graph, 'together', V(graph), df$together)
+  graph<-set.vertex.attribute(graph, 'epi', V(graph), df$epi)
+  graph<-set.vertex.attribute(graph, 'size', V(graph), df$size)
+  return(graph)
+}
+```
+
+```{r Fig5A - CD4 clustering only - edit table (add cluster data)}
+method_clustering <- 'hamming'
+max_dist <- 1
+
+path_to_all <- '/Users/labuser/../../Volumes/LTI/TeamFolder/Data/Petrovax/data_analysis/check codes and results/Fig5/'
+path_to_cd4 <- paste0(path_to_all, 'all_cd4.txt')
+type_dist <- paste('max Hamming ', max_dist, sep='')
+
+
+db_all_cd4 <- fread(path_to_cd4)
+
+### Make vector colors with colors for pie-charts (patients)
+db_try_vector <- dplyr::mutate(db_all_cd4, together = mapply(c, p1792, p1790, p1775, p1800, p1810, p1752, p1813, p1802, p1782, p1771, p1769, p1787, p1765, p1780, p1753, p1757, p1776, SIMPLIFY = F))
+
+path_results <- paste0(path_to_all, '5A/')
+dir.create(file.path(path_results), showWarnings = FALSE)
+forpng <- paste0(path_results, 'cd4_w_obvodka')
+forpng_source <- paste0(forpng, '_source.pdf')
+forpng_source_w_cluster_label <- paste0(forpng, '_source_w_cluster_label.pdf')
+
+g = igraph_from_data_cdr3.2_all_data(db_try_vector, max_dist)
+g = delete.vertices(simplify(g), degree(g)==0)
+
+df.cluster <- data.frame(cdr3aa =character(),
+                  cluster=integer())
+for (x in 1:length(split(V(g)$label, components(g)$membership))) {
+ df.cluster.1 <- data.frame(split(V(g)$label, components(g)$membership)[x], x)
+ names(df.cluster.1) <- c('cdr3aa', 'cluster')
+ df.cluster <- rbind(df.cluster, df.cluster.1)
+}
+df.cluster <- df.cluster %>% unique()
+w_cluster_data_df = merge(x = db_try_vector, y = df.cluster, by = "cdr3aa", all.x = TRUE)
+path_with_clusters = paste0(forpng, 'with_clusters.txt')
+fwrite(w_cluster_data_df,file = path_with_clusters,sep="\t",quote = F)
+
+```
+
+```{r Fig5A - select only good clusters and plot}
+good_clusters <- w_cluster_data_df %>% group_by(cluster) %>% summarise(n_pat_in_clust = n_distinct(patient), dist_pat = patient, .groups = 'drop') %>% as.data.table() %>% filter((n_pat_in_clust>1)&(is.na(cluster)==FALSE)) %>% as.data.table() 
+good_clusters_names <- unique(good_clusters$cluster)
+good_clusters_names
+
+### Select top V- and J-genes
+top_vg = db_try_vector %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table() %>% arrange(desc(v_n)) %>% head(7)
+db_try_vector = db_try_vector %>% mutate(v = ifelse(v %in% top_vg$v,v,"others")) %>% as.data.table()
+top_jg = db_try_vector %>% group_by(j) %>% summarise(j_n = n()) %>% as.data.table() %>% arrange(desc(j_n)) %>% head(7)
+db_try_vector = db_try_vector %>% mutate(j = ifelse(j %in% top_jg$j,j,"others")) %>% as.data.table()
+
+#Size
+db_try_vector = db_try_vector %>% mutate(size = ifelse(size == 1,1.7,size)) %>% as.data.table()
+
+### Select good clusters
+db_try_vector_good_clusters <- w_cluster_data_df %>% filter((cluster %in% good_clusters_names)|(patient=='public'))
+
+#Cluster data and plot it
+g = igraph_from_data_cdr3.2_w_clusetrs_and_pies(db_try_vector_good_clusters, max_dist)
+g = delete.vertices(simplify(g), degree(g)==0)
+
+pdf.size <- 6
+
+#Source
+set.seed(48)
+pdf(forpng_source, pdf.size, pdf.size)
+plot.igraph(g, layout = layout_nicely, #asp = 1,
+            vertex.label = NA,
+            vertex.size=V(g)$size*1.8,
+            vertex.frame.width=0.001,
+            vertex.frame.color="#111111",
+            vertex.shape="pie", 
+            vertex.pie.lty ='blank',
+            vertex.pie=V(g)$together,
+            vertex.pie.color=list(c('#69EBD0', '#72D473', '#94DD6A',  '#D6EC74', '#DCB977',  '#AC8E61','#F4626E','#E69696', 
+       '#DBBADD', '#E991EB', '#8D60F7', '#A487E8', 
+       '#7AA5E5',           
+       '#587196', '#2C9C86', '#447845', '#1DA820')),
+            
+            ## edges =======================================
+            edge.label = NA,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=0.35,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0#,            ## 0 to 1 or TRUE (0.5)
+)
+
+legend_cats = data.frame(attr = c('p1792', 'p1790', 'p1775', 'p1800', 'p1810', 'p1752', 'p1813', 'p1802', 'p1782', 'p1771', 'p1769', 'p1787', 'p1765', 'p1780', 'p1753', 'p1757', 'p1776'),
+                         color = c('#69EBD0', '#72D473', '#94DD6A',  '#D6EC74', '#DCB977',  '#AC8E61','#F4626E','#E69696', 
+       '#DBBADD', '#E991EB', '#8D60F7', '#A487E8', 
+       '#7AA5E5',           
+       '#587196', '#2C9C86', '#447845', '#1DA820'))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+
+title(main=paste('Spike-specific CD4', type_dist,sep='\n'), cex.main=0.8, cex.sub=0.6)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "Sources",
+       cex=0.4, pt.cex = 0.2)
+
+dev.off()
+
+#Source
+set.seed(48)
+pdf(forpng_source_w_cluster_label, pdf.size, pdf.size)
+plot.igraph(g, layout = layout_nicely, #asp = 1,
+            vertex.label = V(g)$cluster,
+            vertex.size=V(g)$size*1.8,
+            vertex.frame.width=0.001,
+            vertex.frame.color="#DDDDDD",
+            vertex.shape="pie", 
+            vertex.pie.lty ='blank',
+            vertex.pie=V(g)$together,
+            vertex.pie.color=list(c('#69EBD0', '#72D473', '#94DD6A',  '#D6EC74', '#DCB977',  '#AC8E61','#F4626E','#E69696', 
+       '#DBBADD', '#E991EB', '#8D60F7', '#A487E8', 
+       '#7AA5E5',           
+       '#587196', '#2C9C86', '#447845', '#1DA820')),
+            
+            ## edges =======================================
+            edge.label = NA,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=0.35,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0#,            ## 0 to 1 or TRUE (0.5)
+)
+
+legend_cats = data.frame(attr = c('p1792', 'p1790', 'p1775', 'p1800', 'p1810', 'p1752', 'p1813', 'p1802', 'p1782', 'p1771', 'p1769', 'p1787', 'p1765', 'p1780', 'p1753', 'p1757', 'p1776'),
+                         color = c('#69EBD0', '#72D473', '#94DD6A',  '#D6EC74', '#DCB977',  '#AC8E61','#F4626E','#E69696', 
+       '#DBBADD', '#E991EB', '#8D60F7', '#A487E8', 
+       '#7AA5E5',           
+       '#587196', '#2C9C86', '#447845', '#1DA820'))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+
+title(main=paste('Spike-specific CD4', type_dist,sep='\n'), cex.main=0.8, cex.sub=0.6)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "Sources",
+       cex=0.4, pt.cex = 0.2)
+
+dev.off()
+```
+
+```{r Fig5B - CD4 logo and V/J gene usage}
+path_results_5b <- paste0(path_to_all, '5B/')
+dir.create(file.path(path_results_5b), showWarnings = FALSE)
+library(hash)
+coor_dict <- hash() 
+coor_dict[['6']] = '#79D1CB'
+coor_dict[['14']] = '#74DEEF'
+coor_dict[['114']] = '#6EB5E4'
+coor_dict[['65']] = '#6F9EF1'
+coor_dict[['16']] = '#5D6FE3'
+coor_dict[['73']] = '#6C7CE6'
+coor_dict[['31']] = '#485DB5'
+coor_dict[['33']] = '#233E84'
+cluster_numbers <- c('6', '14', '114', '65', '16', '73', '31', '33')
+for (cluster_num in cluster_numbers) {
+  print(cluster_num)
+#cluster_num <- '6'
+
+#logo motif
+  cluster.seqs <- db_try_vector_good_clusters %>% filter(cluster==cluster_num)
+  aas <- c('A', 'T', 'C', 'G', 'S', 'L', 'F', 'V', 'E', 'I', 'N', 'D', 'Q', 'R', 'M', 'P', 'Y', 'K', 'H')
+  cs1 = make_col_scheme(chars=aas, groups=rep('', length(aas)), 
+                        cols=rep(coor_dict[[cluster_num]], length(aas)))
+  forpng_cluster <- paste(path_results_5b, 'cluster',cluster_num,'_logo.pdf', sep = "")
+  pdf(forpng_cluster,7,4)
+  logo <- ggseqlogo(cluster.seqs$cdr3aa, method = 'prob',seq_type='aa',col_scheme=cs1)
+  print(logo)
+  dev.off()
+  
+  #Alluvium V-J-usage
+  colors <- hcl.colors(length(unique(cluster.seqs$v)), "Teal")
+  forpng_vj <- paste(path_results_5b, 'cluster',cluster_num,'_vj_usage.pdf', sep = "")
+  pdf(forpng_vj,7,4)
+  alluv <- ggplot(data = cluster.seqs,
+         aes(axis1 = v, axis2 = j, y = size)) +
+    geom_alluvium(aes(fill = v),
+                  curve_type = "sigmoid") +
+    geom_stratum(aes(fill = v)) +
+    geom_text(stat = "stratum",
+              aes(label = after_stat(stratum))) +
+    scale_x_discrete(limits = c("V-gene", "J-gene"),
+                     expand = c(0.07, 0.05)) +
+    scale_fill_manual(values = colors) +
+    theme_void() +  theme(legend.position = "none")
+  print(alluv)
+dev.off()
+
+}
+coor_dict[[cluster_num]]
+```
+
+```{r Fig 5D - CD8 - edit table (add clusters data)}
+method_clustering <- 'hamming'
+max_dist <- 1
+
+path_to_all <- '/Users/labuser/../../Volumes/LTI/TeamFolder/Data/Petrovax/data_analysis/check codes and results/Fig5/'
+path_to_cd8 <- paste0(path_to_all, 'all_cd8.txt')
+type_dist <- paste('max Hamming ', max_dist, sep='')
+
+
+db_all_cd8 <- fread(path_to_cd8)
+
+### Make vector colors with colors for pie-charts (patients)
+db_try_vector <- dplyr::mutate(db_all_cd8, together = mapply(c, p1792, p1790, p1775, p1800, p1810, p1752, p1813, p1802, p1782, p1771, p1769, p1787, p1765, p1780, p1753, p1757, p1776, SIMPLIFY = F))
+
+path_results <- paste0(path_to_all, '5D/')
+dir.create(file.path(path_results), showWarnings = FALSE)
+forpng <- paste0(path_results, 'cd8')
+forpng_source <- paste0(forpng, '_source.pdf')
+forpng_source_w_cluster_label <- paste0(forpng, '_source_w_cluster_label.pdf')
+
+g = igraph_from_data_cdr3.2_all_data(db_try_vector, max_dist)
+g = delete.vertices(simplify(g), degree(g)==0)
+
+df.cluster <- data.frame(cdr3aa =character(),
+                  cluster=integer())
+for (x in 1:length(split(V(g)$label, components(g)$membership))) {
+ df.cluster.1 <- data.frame(split(V(g)$label, components(g)$membership)[x], x)
+ names(df.cluster.1) <- c('cdr3aa', 'cluster')
+ df.cluster <- rbind(df.cluster, df.cluster.1)
+}
+df.cluster <- df.cluster %>% unique()
+w_cluster_data_df = merge(x = db_try_vector, y = df.cluster, by = "cdr3aa", all.x = TRUE)
+path_with_clusters = paste0(forpng, 'with_clusters.txt')
+fwrite(w_cluster_data_df,file = path_with_clusters,sep="\t",quote = F)
+```
+
+```{r Fig 5D - select good clusters and plot}
+good_clusters <- w_cluster_data_df %>% group_by(cluster) %>% summarise(n_pat_in_clust = n_distinct(patient), dist_pat = patient, .groups = 'drop') %>% as.data.table() %>% filter((n_pat_in_clust>1)&(is.na(cluster)==FALSE)) %>% as.data.table() 
+good_clusters_names <- unique(good_clusters$cluster)
+print(good_clusters_names)
+
+### Select top V- and J-genes
+top_vg = db_try_vector %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table() %>% arrange(desc(v_n)) %>% head(7)
+db_try_vector = db_try_vector %>% mutate(v = ifelse(v %in% top_vg$v,v,"others")) %>% as.data.table()
+top_jg = db_try_vector %>% group_by(j) %>% summarise(j_n = n()) %>% as.data.table() %>% arrange(desc(j_n)) %>% head(7)
+db_try_vector = db_try_vector %>% mutate(j = ifelse(j %in% top_jg$j,j,"others")) %>% as.data.table()
+
+#Size
+db_try_vector = db_try_vector %>% mutate(size = ifelse(size == 1,1.7,size)) %>% as.data.table()
+
+### Select good clusters
+db_try_vector_good_clusters <- w_cluster_data_df %>% filter((cluster %in% good_clusters_names)|(patient=='public'))
+
+#Cluster data and plot it
+g = igraph_from_data_cdr3.2_w_clusetrs_and_pies(db_try_vector_good_clusters, max_dist)
+g = delete.vertices(simplify(g), degree(g)==0)
+
+pdf.size <- 6
+
+#Source
+set.seed(48)
+pdf(forpng_source, pdf.size, pdf.size)
+plot.igraph(g, layout = layout_nicely, #asp = 1,
+            vertex.label = NA,
+            vertex.size=V(g)$size*1.8,
+            vertex.frame.width=0.001,
+            vertex.frame.color="#DDDDDD",
+            vertex.shape="pie", 
+            vertex.pie.lty ='blank',
+            vertex.pie=V(g)$together,
+            vertex.pie.color=list(c('#69EBD0', '#72D473', '#94DD6A',  '#D6EC74', '#DCB977',  '#AC8E61','#F4626E','#E69696', 
+       '#DBBADD', '#E991EB', '#8D60F7', '#A487E8', 
+       '#7AA5E5',           
+       '#587196', '#2C9C86', '#447845', '#1DA820')),
+            
+            ## edges =======================================
+            edge.label = NA,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=0.35,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0#,            ## 0 to 1 or TRUE (0.5)
+)
+
+legend_cats = data.frame(attr = c('p1792', 'p1790', 'p1775', 'p1800', 'p1810', 'p1752', 'p1813', 'p1802', 'p1782', 'p1771', 'p1769', 'p1787', 'p1765', 'p1780', 'p1753', 'p1757', 'p1776'),
+                         color = c('#69EBD0', '#72D473', '#94DD6A',  '#D6EC74', '#DCB977',  '#AC8E61','#F4626E','#E69696', 
+       '#DBBADD', '#E991EB', '#8D60F7', '#A487E8', 
+       '#7AA5E5',           
+       '#587196', '#2C9C86', '#447845', '#1DA820'))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+
+title(main=paste('Spike-specific CD8', type_dist,sep='\n'), cex.main=0.8, cex.sub=0.6)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "Sources",
+       cex=0.4, pt.cex = 0.2)
+
+dev.off()
+
+#Source
+set.seed(48)
+pdf(forpng_source_w_cluster_label, pdf.size, pdf.size)
+plot.igraph(g, layout = layout_nicely, #asp = 1,
+            vertex.label = V(g)$cluster,
+            vertex.size=V(g)$size*1.8,
+            vertex.frame.width=0.001,
+            vertex.frame.color="#DDDDDD",
+            vertex.shape="pie", 
+            vertex.pie.lty ='blank',
+            vertex.pie=V(g)$together,
+            vertex.pie.color=list(c('#69EBD0', '#72D473', '#94DD6A',  '#D6EC74', '#DCB977',  '#AC8E61','#F4626E','#E69696', 
+       '#DBBADD', '#E991EB', '#8D60F7', '#A487E8', 
+       '#7AA5E5',           
+       '#587196', '#2C9C86', '#447845', '#1DA820')),
+            
+            ## edges =======================================
+            edge.label = NA,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=0.35,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0#,            ## 0 to 1 or TRUE (0.5)
+)
+
+legend_cats = data.frame(attr = c('p1792', 'p1790', 'p1775', 'p1800', 'p1810', 'p1752', 'p1813', 'p1802', 'p1782', 'p1771', 'p1769', 'p1787', 'p1765', 'p1780', 'p1753', 'p1757', 'p1776'),
+                         color = c('#69EBD0', '#72D473', '#94DD6A',  '#D6EC74', '#DCB977',  '#AC8E61','#F4626E','#E69696', 
+       '#DBBADD', '#E991EB', '#8D60F7', '#A487E8', 
+       '#7AA5E5',           
+       '#587196', '#2C9C86', '#447845', '#1DA820'))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+
+title(main=paste('Spike-specific CD8', type_dist,sep='\n'), cex.main=0.8, cex.sub=0.6)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "Sources",
+       cex=0.4, pt.cex = 0.2)
+
+dev.off()
+```
+
+```{r Fig 5E - Cd8 logo and V/J gene usage}
+path_results_5e <- paste0(path_to_all, '5E/')
+dir.create(file.path(path_results_5e), showWarnings = FALSE)
+library(hash)
+coor_dict <- hash() 
+coor_dict[['4']] = '#CC0100'
+coor_dict[['5']] = '#F73636'
+coor_dict[['1']] = '#DC4B5C'
+coor_dict[['3']] = '#EA6F90'
+coor_dict[['6']] = '#D964A5'
+coor_dict[['7']] = '#C55B96'
+cluster_numbers <- c('1', '3', '4', '5', '6', '7')
+for (cluster_num in cluster_numbers) {
+  print(cluster_num)
+#cluster_num <- '6'
+
+#logo motif
+  cluster.seqs <- db_try_vector_good_clusters %>% filter(cluster==cluster_num)
+  aas <- c('A', 'T', 'C', 'G', 'S', 'L', 'F', 'V', 'E', 'I', 'N', 'D', 'Q', 'R', 'M', 'P', 'Y', 'K', 'H', 'W')
+  cs1 = make_col_scheme(chars=aas, groups=rep('', length(aas)), 
+                        cols=rep(coor_dict[[cluster_num]], length(aas)))
+  forpng_cluster <- paste(path_results_5e, 'cluster',cluster_num,'_logo.pdf', sep = "")
+  pdf(forpng_cluster,7,4)
+  logo <- ggseqlogo(cluster.seqs$cdr3aa, method = 'prob',seq_type='aa',col_scheme=cs1)
+  print(logo)
+  dev.off()
+  
+  #Alluvium V-J-usage
+  colors <- hcl.colors(length(unique(cluster.seqs$v)), "Burg")
+  forpng_vj <- paste(path_results_5e, 'cluster',cluster_num,'_vj_usage.pdf', sep = "")
+  pdf(forpng_vj,7,4)
+  alluv <- ggplot(data = cluster.seqs,
+         aes(axis1 = v, axis2 = j, y = size)) +
+    geom_alluvium(aes(fill = v),
+                  curve_type = "sigmoid") +
+    geom_stratum(aes(fill = v)) +
+    geom_text(stat = "stratum",
+              aes(label = after_stat(stratum))) +
+    scale_x_discrete(limits = c("V-gene", "J-gene"),
+                     expand = c(0.07, 0.05)) +
+    scale_fill_manual(values = colors) +
+    theme_void() +  theme(legend.position = "none")
+  print(alluv)
+dev.off()
+
+}
+
+```
+
+```{r Fig 5G - Epitope specific clones - to see clusters}
+method_clustering <- 'hamming'
+max_dist <- 2
+
+path_to_all <- '/Users/labuser/../../Volumes/LTI/TeamFolder/Data/Petrovax/data_analysis/check codes and results/Fig5/'
+path_to_epi <- paste0(path_to_all, 'all_epitopes.txt')
+type_dist <- paste('max Hamming ', max_dist, sep='')
+
+
+db_all_epi <- fread(path_to_epi)
+
+### Make vector colors with colors for pie-charts (patients)
+db_try_vector <- dplyr::mutate(db_all_epi, together = mapply(c, p1752, p1775, p1782, p1810, p1813, p1753, p1776, p1800, p1780, p1802, p1771, p1787, p1792, SIMPLIFY = F))
+
+path_results <- paste0(path_to_all, '5G/')
+dir.create(file.path(path_results), showWarnings = FALSE)
+forpng <- paste0(path_results, 'epi_all')
+forpng_source <- paste0(forpng, '_source.pdf')
+forpng_source_w_cluster_label <- paste0(forpng, '_source_w_cluster_label.pdf')
+
+### Select top V- and J-genes
+top_vg = db_try_vector %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table() %>% arrange(desc(v_n)) %>% head(7)
+db_try_vector = db_try_vector %>% mutate(v = ifelse(v %in% top_vg$v,v,"others")) %>% as.data.table()
+top_jg = db_try_vector %>% group_by(j) %>% summarise(j_n = n()) %>% as.data.table() %>% arrange(desc(j_n)) %>% head(7)
+db_try_vector = db_try_vector %>% mutate(j = ifelse(j %in% top_jg$j,j,"others")) %>% as.data.table()
+
+
+#Cluster data and plot it
+g = igraph_from_data_cdr3.2_w_pies_wo_clusters(db_try_vector, max_dist)
+g = delete.vertices(simplify(g), degree(g)==0)
+
+pdf.size <- 6
+
+#Source
+set.seed(48)
+pdf(forpng_source, pdf.size, pdf.size)
+plot.igraph(g, layout = layout_nicely, #asp = 1,
+            vertex.label = V(g)$epi,
+            vertex.label.cex=0.4,
+            vertex.size=V(g)$size*1.8,
+            vertex.frame.width=0.001,
+            vertex.frame.color="#111111",
+            vertex.shape="pie", 
+            vertex.pie.lty ='blank',
+            vertex.pie=V(g)$together,
+            vertex.pie.color=list(c('#AC8E61','#94DD6A','#DBBADD','#DCB977','#F4626E','#2C9C86','#1DA820','#D6EC74','#587196','#E69696','#E991EB','#A487E8','#69EBD0')),
+            
+            ## edges =======================================
+            edge.label = NA,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=0.35,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0#,            ## 0 to 1 or TRUE (0.5)
+)
+
+legend_cats = data.frame(attr = c('p1752','p1775','p1782','p1810','p1813','p1753','p1776','p1800','p1780','p1802','p1771','p1787', 'p1792'),
+                         color = c('#AC8E61','#94DD6A','#DBBADD','#DCB977','#F4626E','#2C9C86','#1DA820','#D6EC74','#587196','#E69696','#E991EB','#A487E8','#69EBD0'))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+
+title(main=paste('Epitope-specific clones', type_dist,sep='\n'), cex.main=0.8, cex.sub=0.6)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "Sources",
+       cex=0.4, pt.cex = 0.2)
+
+dev.off()
+
+```
+
+```{r Fig 5G - make two clusters (YLQ-FCN-QYI-QQL) + (RLQ-KCY-IED)}
+method_clustering <- 'hamming'
+max_dist <- 2
+
+path_to_all <- '/Users/labuser/../../Volumes/LTI/TeamFolder/Data/Petrovax/data_analysis/check codes and results/Fig5/'
+path_to_cd4 <- paste0(path_to_all, 'all_epitopes.txt')
+type_dist <- paste('max Hamming ', max_dist, sep='')
+
+####### First group of epitopes ####### 
+db_all_cd4 <- fread(path_to_cd4)
+
+### Make vector colors with colors for pie-charts (patients)
+db_try_vector <- dplyr::mutate(db_all_cd4, together = mapply(c, p1752, p1775, p1782, p1810, p1813, p1753, p1776, p1800, p1780, p1802, p1771, p1787, p1792, SIMPLIFY = F))
+
+epi_name <- 'YLQ'
+db_try_vector <- db_try_vector %>% filter(epi==epi_name)
+
+forpng <- paste0(path_results, epi_name)
+forpng_source <- paste0(forpng, '_source.pdf')
+forpng_source_w_labels <- paste0(forpng, '_source_w_labels.pdf')
+
+
+### Select top V- and J-genes
+top_vg = db_try_vector %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table() %>% arrange(desc(v_n)) %>% head(7)
+db_try_vector = db_try_vector %>% mutate(v = ifelse(v %in% top_vg$v,v,"others")) %>% as.data.table()
+top_jg = db_try_vector %>% group_by(j) %>% summarise(j_n = n()) %>% as.data.table() %>% arrange(desc(j_n)) %>% head(7)
+db_try_vector = db_try_vector %>% mutate(j = ifelse(j %in% top_jg$j,j,"others")) %>% as.data.table()
+
+
+#Cluster data and plot it
+g = igraph_from_data_cdr3.2_w_pies_wo_clusters(db_try_vector, max_dist)
+g = delete.vertices(simplify(g), degree(g)==0)
+
+pdf.size <- 6
+
+#Source
+set.seed(48)
+pdf(forpng_source, pdf.size, pdf.size)
+plot.igraph(g, layout = layout_nicely, #asp = 1,
+            vertex.label = NA,
+            vertex.size=V(g)$size*1.8,
+            vertex.frame.width=0.001,
+            vertex.frame.color="#111111",
+            vertex.shape="pie", 
+            vertex.pie.lty ='blank',
+            vertex.pie=V(g)$together,
+            vertex.pie.color=list(c('#AC8E61','#94DD6A','#DBBADD','#DCB977','#F4626E','#2C9C86','#1DA820','#D6EC74','#587196','#E69696','#E991EB','#A487E8','#69EBD0')),
+            
+            
+            edge.label = NA,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=0.35,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0#,            ## 0 to 1 or TRUE (0.5)
+)
+
+legend_cats = data.frame(attr = c('p1752','p1775','p1782','p1810','p1813','p1753','p1776','p1800','p1780','p1802','p1771','p1787', 'p1792'),
+                         color = c('#AC8E61','#94DD6A','#DBBADD','#DCB977','#F4626E','#2C9C86','#1DA820','#D6EC74','#587196','#E69696','#E991EB','#A487E8','#69EBD0'))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+
+title(main=paste('Epitope-specific clones', type_dist,sep='\n'), cex.main=0.8, cex.sub=0.6)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "Sources",
+       cex=0.4, pt.cex = 0.2)
+
+dev.off()
+
+
+#Source w labels
+set.seed(48)
+pdf(forpng_source_w_labels, pdf.size, pdf.size)
+plot.igraph(g, layout = layout_nicely, #asp = 1,
+            vertex.label = V(g)$epi,
+            vertex.label.cex = 0.5,
+            vertex.size=V(g)$size*1.8,
+            vertex.frame.width=0.001,
+            vertex.frame.color="#111111",
+            vertex.shape="pie", 
+            vertex.pie.lty ='blank',
+            vertex.pie=V(g)$together,
+            vertex.pie.color=list(c('#AC8E61','#94DD6A','#DBBADD','#DCB977','#F4626E','#2C9C86','#1DA820','#D6EC74','#587196','#E69696','#E991EB','#A487E8','#69EBD0')),
+            
+            
+            edge.label = NA,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=0.35,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0#,            ## 0 to 1 or TRUE (0.5)
+)
+
+legend_cats = data.frame(attr = c('p1752','p1775','p1782','p1810','p1813','p1753','p1776','p1800','p1780','p1802','p1771','p1787', 'p1792'),
+                         color = c('#AC8E61','#94DD6A','#DBBADD','#DCB977','#F4626E','#2C9C86','#1DA820','#D6EC74','#587196','#E69696','#E991EB','#A487E8','#69EBD0'))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+
+title(main=paste('Epitope-specific clones', type_dist,sep='\n'), cex.main=0.8, cex.sub=0.6)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "Sources",
+       cex=0.4, pt.cex = 0.2)
+
+dev.off()
+
+####### Second group of epitopes ####### 
+db_all_cd4 <- fread(path_to_cd4)
+
+### Make vector colors with colors for pie-charts (patients)
+db_try_vector <- dplyr::mutate(db_all_cd4, together = mapply(c, p1752, p1775, p1782, p1810, p1813, p1753, p1776, p1800, p1780, p1802, p1771, p1787, p1792, SIMPLIFY = F))
+
+db_try_vector <- db_try_vector %>% filter((epi=='RLQ')|(epi=='KCY')|(epi=='IED'))
+path_results <- paste0(path_to_all, '5G/')
+dir.create(file.path(path_results), showWarnings = FALSE)
+forpng <- paste0(path_results, 'epi_RLQ-KCY-IED')
+forpng_source <- paste0(forpng, '_source.pdf')
+forpng_source_w_labels <- paste0(forpng, '_source_w_labels.pdf')
+
+
+### Select top V- and J-genes
+top_vg = db_try_vector %>% group_by(v) %>% summarise(v_n = n()) %>% as.data.table() %>% arrange(desc(v_n)) %>% head(7)
+db_try_vector = db_try_vector %>% mutate(v = ifelse(v %in% top_vg$v,v,"others")) %>% as.data.table()
+top_jg = db_try_vector %>% group_by(j) %>% summarise(j_n = n()) %>% as.data.table() %>% arrange(desc(j_n)) %>% head(7)
+db_try_vector = db_try_vector %>% mutate(j = ifelse(j %in% top_jg$j,j,"others")) %>% as.data.table()
+
+
+#Cluster data and plot it
+g = igraph_from_data_cdr3.2_w_pies_wo_clusters(db_try_vector, max_dist)
+g = delete.vertices(simplify(g), degree(g)==0)
+
+pdf.size <- 6
+
+#Source
+set.seed(48)
+pdf(forpng_source, pdf.size, pdf.size)
+plot.igraph(g, layout = layout_nicely, #asp = 1,
+            vertex.label = NA,
+            vertex.size=V(g)$size*1.8,
+            vertex.frame.width=0.001,
+            vertex.frame.color="#111111",
+            vertex.shape="pie", 
+            vertex.pie.lty ='blank',
+            vertex.pie=V(g)$together,
+            vertex.pie.color=list(c('#AC8E61','#94DD6A','#DBBADD','#DCB977','#F4626E','#2C9C86','#1DA820','#D6EC74','#587196','#E69696','#E991EB','#A487E8','#69EBD0')),
+            
+            
+            edge.label = NA,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=0.35,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0#,            ## 0 to 1 or TRUE (0.5)
+)
+
+legend_cats = data.frame(attr = c('p1752','p1775','p1782','p1810','p1813','p1753','p1776','p1800','p1780','p1802','p1771','p1787', 'p1792'),
+                         color = c('#AC8E61','#94DD6A','#DBBADD','#DCB977','#F4626E','#2C9C86','#1DA820','#D6EC74','#587196','#E69696','#E991EB','#A487E8','#69EBD0'))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+
+title(main=paste('Epitope-specific clones', type_dist,sep='\n'), cex.main=0.8, cex.sub=0.6)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "Sources",
+       cex=0.4, pt.cex = 0.2)
+
+dev.off()
+
+
+#Source w labels
+set.seed(48)
+pdf(forpng_source_w_labels, pdf.size, pdf.size)
+plot.igraph(g, layout = layout_nicely, #asp = 1,
+            vertex.label = V(g)$epi,
+            vertex.label.cex = 0.5,
+            vertex.size=V(g)$size*1.8,
+            vertex.frame.width=0.001,
+            vertex.frame.color="#111111",
+            vertex.shape="pie", 
+            vertex.pie.lty ='blank',
+            vertex.pie=V(g)$together,
+            vertex.pie.color=list(c('#AC8E61','#94DD6A','#DBBADD','#DCB977','#F4626E','#2C9C86','#1DA820','#D6EC74','#587196','#E69696','#E991EB','#A487E8','#69EBD0')),
+            
+            
+            edge.label = NA,
+            edge.label.cex = 1.3,
+            edge.color = "lightgray",
+            edge.width=0.35,
+            edge.lty = "solid",           ## linetype: blank, solid, dashed, dotted,
+            ## dotdash, longdash, or twodash
+            edge.curved = 0#,            ## 0 to 1 or TRUE (0.5)
+)
+
+legend_cats = data.frame(attr = c('p1752','p1775','p1782','p1810','p1813','p1753','p1776','p1800','p1780','p1802','p1771','p1787', 'p1792'),
+                         color = c('#AC8E61','#94DD6A','#DBBADD','#DCB977','#F4626E','#2C9C86','#1DA820','#D6EC74','#587196','#E69696','#E991EB','#A487E8','#69EBD0'))
+legend_cats  = legend_cats[order(legend_cats$attr), c(1, 2)]
+
+title(main=paste('Epitope-specific clones', type_dist,sep='\n'), cex.main=0.8, cex.sub=0.6)
+legend_cats$color = as.character(legend_cats$color)
+legend(x = "bottomleft",      ## position, also takes x,y coordinates
+       legend = legend_cats$attr,
+       pch = 19,              ## legend symbols see ?points
+       col = legend_cats$color,
+       bty = "n",
+       title = "Sources",
+       cex=0.4, pt.cex = 0.2)
+
+dev.off()
+```
+
+```{r Fig 5H - clusters separate epitopes to get number clustered}
+method_clustering <- 'hamming'
+max_dist <- 2
+
+path_to_all <- '/Users/labuser/../../Volumes/LTI/TeamFolder/Data/Petrovax/data_analysis/check codes and results/Fig5/'
+path_to_cd4 <- paste0(path_to_all, 'all_epitopes.txt')
+type_dist <- paste('max Hamming ', max_dist, sep='')
+
+path_results <- paste0(path_to_all, '5H/')
+dir.create(file.path(path_results), showWarnings = FALSE)
+
+
+
+```
+
